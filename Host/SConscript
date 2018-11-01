@@ -1,0 +1,115 @@
+################################################################################
+# Filename:    SConscript                                                      #
+# License:     Public Domain                                                   #
+# Author:      New Rupture Systems                                             #
+# Description: Build Host program 'cncControl'.                                #
+################################################################################
+import os
+Import("env")
+
+# Configure a suitable environment
+if env["LIST_DEPENDS"]:
+   listing = {}
+   args = {"listing" : listing}
+else:
+   args = {}
+
+conf = env.ConfigureEx(**args)
+try:
+   cc = conf.FindComponent(name = "GCC",
+                           component = "CC",
+                           check = (conf.CheckCC,
+                                    lambda : conf.CheckDeclaration("__GNUC__")))
+   link = conf.FindComponent(name = "C Linker",
+                             component = "LINK",
+                             check = conf.CheckLink,
+                             depends = cc)
+
+#   conf.FindLibrary(name = "libusb",
+#                    check = lambda : conf.CheckLib(library = "usb-1.0",
+#                                                   language = "C",
+#                                                   autoadd = False),
+#                    depends = (cc, link))
+
+   # Required for 'libusb' build
+   conf.FindProgram("bash")
+   conf.FindProgram("m4")
+   conf.FindProgram("make")
+except Exception as e:
+   status = str(e)
+   Return("status")
+else:
+   if env["LIST_DEPENDS"]:
+      status = (None, listing)
+      Return("status")
+finally:
+   env = conf.Finish()
+
+
+
+# TODO: Remove libusb build (should instead look for and use system library)
+# Build libusb (External, uses GNU Autotools)
+if env["TARGET_OS"] == "Windows":
+   assert((env["TARGET_ARCH"] == "x86_64") or (env["TARGET_ARCH"] == "x86"))
+   libusb_target = (env["TARGET_ARCH"] + "-w64-mingw32")
+else:
+   libusb_target = (env["TARGET_ARCH"].lower() + "-pc-" +
+                    env["TARGET_OS"].lower())
+libusb_build = Action([Mkdir(Dir("libusb_build")),
+                       Mkdir(Dir("libusb_build").Dir("prefix")),
+                       Action("@bash -c 'cd " + Dir("libusb_build").abspath +
+                        " && " + (Dir("#").Dir("Host").Dir("libusb-1.0.20")
+                        .File("configure").abspath) + " -q --prefix=" +
+                        Dir("libusb_build").Dir("prefix").abspath +
+                        " --host=" + libusb_target + " && make > " +
+                        str(os.devnull) + " 2>&1 && make install > " +
+                        str(os.devnull) + " 2>&1'",
+                       cmdstr = "Building libusb")])
+libusb = env.Command(Dir("libusb_build"), [], libusb_build)
+env.Depends(File("Main.c"), libusb)
+env.Clean(Dir("libusb_build"), libusb)
+
+
+
+# Setup compiler
+env.Append(CPPPATH = [Dir("#").Dir("Shared"), "Platform"],
+           CPPDEFINES = ["BCP_HOST"])
+
+# Apply compiler specific flags
+if env.subst("$CC") == "gcc":
+   env.Append(CFLAGS = ["-pedantic", "-std=gnu99", "-O2", "-Wall",
+                        "-Wfatal-errors"])
+   if env["DEBUG"]:
+      env.Append(CFLAGS = ["-g"])
+   else:
+      env.Append(CFLAGS = ["-ffunction-sections", "-fdata-sections"])
+
+# Add objects
+cppPath = ["libusb_build/prefix/include/libusb-1.0"]
+cppPath.extend(env["CPPPATH"])
+objects = [env.Object("Main.c", CPPPATH = cppPath),
+           env.Object("BCP_Host", Dir("#").Dir("Shared").File("BCP.c")),
+           env.Object("Flash.c"),
+           env.Object("IHex.c")]
+
+
+# Setup linker
+env.Append(LIBPATH = ["libusb_build/prefix/lib"],
+           LIBS = ["usb-1.0"])
+
+# Apply linker specific flags
+if env.subst("$LINK") == "ld" or env.subst("$LINK") == "gcc":
+   if env["TARGET_OS"] == "GNU/Linux":
+      env.Append(LINKFLAGS = ["-z" + "origin"])
+      env.Append(RPATH = env.Literal("\\$$ORIGIN"))
+   if not env["DEBUG"]:
+      env.Append(LINKFLAGS = ["--gc-sections", "-s"])
+
+   if env.subst("$LINK") == "gcc":
+      env.Replace(LINKFLAGS = ["-Wl," + flag for flag in env["LINKFLAGS"]])
+
+
+# Add program
+env.Alias("cncControl", env.Program("cncControl", objects))
+
+env.Default(".")

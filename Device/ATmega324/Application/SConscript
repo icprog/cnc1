@@ -1,0 +1,87 @@
+################################################################################
+# Filename:    SConscript                                                      #
+# License:     Public Domain                                                   #
+# Author:      New Rupture Systems                                             #
+# Description: Build CNC 1 project device application program.                 #
+################################################################################
+Import("env")
+
+# Adjust target to device
+target = ("AVR", "None", "0")
+env.Replace(TARGET_ARCH = target[0],
+            TARGET_OS = target[1],
+            TARGET_OS_VERSION = target[2],
+            CPPDEFINES = [("PLATFORM_ARCH", "PLATFORM_{0}".
+                           format(target[0]).upper()),
+                          ("PLATFORM_OS", "PLATFORM_{0}".
+                           format(target[1]).upper()),
+                          ("PLATFORM_OS_VERSION", target[2])])
+
+# Configure a suitable environment
+if env["LIST_DEPENDS"]:
+   listing = {}
+   args = {"listing" : listing}
+else:
+   args = {}
+
+conf = env.ConfigureEx(**args)
+try:
+   cc = conf.FindComponent(name = "AVR GCC",
+                           component = "CC",
+                           check = (conf.CheckCC,
+                                    lambda : conf.CheckDeclaration("__GNUC__"),
+                                    lambda : conf.CheckCHeader("avr/version.h",
+                                                               "<>")))
+   link = conf.FindComponent(name = "AVR C Linker",
+                             component = "LINK",
+                             check = lambda : conf.CheckLink("ELF"),
+                             depends = cc)
+
+   conf.FindProgram("avr-objcopy")
+except Exception as e:
+   error = str(e)
+   Return("error")
+else:
+   if env["LIST_DEPENDS"]:
+      status = (None, listing)
+      Return("status")
+finally:
+   env = conf.Finish()
+
+
+# Setup compiler and linker flags
+env.Replace(CFLAGS = ["-std=gnu99", "-Wall", "-Wfatal-errors", "-O2",
+                      "-mmcu=atmega324a", "-mcall-prologues"],
+            CPPPATH = ["Platform"])
+env.Append(CPPDEFINES = [("F_CPU", "12000000")])
+
+if env["DEBUG"]:
+   env.Append(CFLAGS = ["-g"])
+else:
+   env.Append(CFLAGS = ["-ffunction-sections", "-fdata-sections"])
+   env.Append(LINKFLAGS = ["--gc-sections", "-s"])
+
+# Linker should be either 'gcc' or 'ld' (prepend prefix if using 'gcc')
+if env.subst("$LINK") == "gcc":
+   env.Replace(LINKFLAGS = ["-Wl," + flag for flag in env["LINKFLAGS"]])
+   env.Append(LINKFLAGS = ["-mmcu=atmega324a"])
+
+
+# Add program
+cppPath = ["."]
+cppPath.extend(env["CPPPATH"]);
+main = env.Program("Main", env.Object("Main.c") +
+                           env.Object("BootExport.c") +
+                           env.Object("Platform/AVR/AVR.c", CPPPATH = cppPath) +
+                           env.Object("BGUI.c") +
+                           env.Object("SSD1289.c") +
+                           env.Object("XPT2046.c"))
+
+# Make Intel Hex file from ELF sections
+main_hex = env.Command("Main.hex", main, Action("@avr-objcopy -j .text -j .data"
+                                                " -O ihex $SOURCE $TARGET",
+                                                cmdstr = "Making $TARGET"))
+env.Clean(main, "Main.hex")
+env.Alias("Application", main_hex)
+
+env.Default(".")
